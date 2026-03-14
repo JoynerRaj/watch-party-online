@@ -153,6 +153,3 @@ The frontend will start on **http://localhost:5173**
 ## 📝 License
 
 MIT — build, share, and watch movies together! 🍿
-=======
-# watchparty-3d
->>>>>>> 4563b41e95d9654186104737ee03c50f8580eeb1
