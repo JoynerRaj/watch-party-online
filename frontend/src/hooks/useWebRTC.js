@@ -12,6 +12,7 @@ export function useWebRTC(socket, roomId, localUserId) {
   const [isSpeaking, setIsSpeaking] = useState(false);
 
   const peersRef = useRef({});
+  const screenPeersRef = useRef({});
   const localStreamRef = useRef(null);
   const screenStreamRef = useRef(null);
   const analyserRef = useRef(null);
@@ -157,11 +158,9 @@ export function useWebRTC(socket, roomId, localUserId) {
           user_id: localUserId,
         });
 
-        // Send screen stream to all peers
-        Object.entries(peersRef.current).forEach(([sid, pc]) => {
-          stream.getTracks().forEach((track) => {
-            pc.addTrack(track, stream);
-          });
+        // Send screen stream to all peers using screen peers
+        Object.keys(peersRef.current).forEach((sid) => {
+          createPeer(sid, true, 'screen');
         });
       } catch (e) {
         console.error('Screen share error:', e);
@@ -171,19 +170,20 @@ export function useWebRTC(socket, roomId, localUserId) {
 
   // Create peer connection
   const createPeer = useCallback(
-    (targetSid, initiator = false) => {
-      if (peersRef.current[targetSid]) return peersRef.current[targetSid];
+    (targetSid, initiator = false, type = 'media') => {
+      const activePeersRef = type === 'media' ? peersRef : screenPeersRef;
+      if (activePeersRef.current[targetSid]) return activePeersRef.current[targetSid];
 
       const pc = new RTCPeerConnection(ICE_SERVERS);
-      peersRef.current[targetSid] = pc;
+      activePeersRef.current[targetSid] = pc;
 
       // Add local tracks
-      if (localStreamRef.current) {
+      if (type === 'media' && localStreamRef.current) {
         localStreamRef.current.getTracks().forEach((track) => {
           pc.addTrack(track, localStreamRef.current);
         });
       }
-      if (screenStreamRef.current) {
+      if (type === 'screen' && screenStreamRef.current) {
         screenStreamRef.current.getTracks().forEach((track) => {
           pc.addTrack(track, screenStreamRef.current);
         });
@@ -194,6 +194,7 @@ export function useWebRTC(socket, roomId, localUserId) {
           socket.current?.emit('webrtc_ice_candidate', {
             target_sid: targetSid,
             candidate: event.candidate,
+            type,
           });
         }
       };
@@ -201,12 +202,7 @@ export function useWebRTC(socket, roomId, localUserId) {
       pc.ontrack = (event) => {
         const [stream] = event.streams;
         if (stream) {
-          // Determine if this is a screen share stream or media stream
-          const hasVideo = stream.getVideoTracks().length > 0;
-          const videoTrack = stream.getVideoTracks()[0];
-          const isScreen = videoTrack && videoTrack.label && videoTrack.label.toLowerCase().includes('screen');
-
-          if (isScreen) {
+          if (type === 'screen') {
             setScreenShareStream(stream);
           } else {
             setRemoteStreams((prev) => ({ ...prev, [targetSid]: stream }));
@@ -217,12 +213,16 @@ export function useWebRTC(socket, roomId, localUserId) {
       pc.onconnectionstatechange = () => {
         if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
           pc.close();
-          delete peersRef.current[targetSid];
-          setRemoteStreams((prev) => {
-            const next = { ...prev };
-            delete next[targetSid];
-            return next;
-          });
+          delete activePeersRef.current[targetSid];
+          if (type === 'screen') {
+            setScreenShareStream(null);
+          } else {
+            setRemoteStreams((prev) => {
+              const next = { ...prev };
+              delete next[targetSid];
+              return next;
+            });
+          }
         }
       };
 
@@ -234,6 +234,7 @@ export function useWebRTC(socket, roomId, localUserId) {
             socket.current?.emit('webrtc_offer', {
               target_sid: targetSid,
               sdp: pc.localDescription,
+              type,
             });
           } catch (e) {
             console.error('Negotiation error:', e);
@@ -251,8 +252,8 @@ export function useWebRTC(socket, roomId, localUserId) {
     if (!socket.current) return;
 
     const handleOffer = async (data) => {
-      const { sdp, from_sid } = data;
-      const pc = createPeer(from_sid, false);
+      const { sdp, from_sid, type } = data;
+      const pc = createPeer(from_sid, false, type);
       try {
         await pc.setRemoteDescription(new RTCSessionDescription(sdp));
         const answer = await pc.createAnswer();
@@ -260,6 +261,7 @@ export function useWebRTC(socket, roomId, localUserId) {
         socket.current?.emit('webrtc_answer', {
           target_sid: from_sid,
           sdp: pc.localDescription,
+          type,
         });
       } catch (e) {
         console.error('Handle offer error:', e);
@@ -267,8 +269,9 @@ export function useWebRTC(socket, roomId, localUserId) {
     };
 
     const handleAnswer = async (data) => {
-      const { sdp, from_sid } = data;
-      const pc = peersRef.current[from_sid];
+      const { sdp, from_sid, type } = data;
+      const activePeersRef = type === 'media' ? peersRef : screenPeersRef;
+      const pc = activePeersRef.current[from_sid];
       if (pc) {
         try {
           await pc.setRemoteDescription(new RTCSessionDescription(sdp));
@@ -279,11 +282,12 @@ export function useWebRTC(socket, roomId, localUserId) {
     };
 
     const handleIceCandidate = async (data) => {
-      const { candidate, from_sid } = data;
-      const pc = peersRef.current[from_sid];
+      const { candidate, from_sid, type } = data;
+      const activePeersRef = type === 'media' ? peersRef : screenPeersRef;
+      const pc = activePeersRef.current[from_sid];
       if (pc) {
         try {
-          await pc.addIceCandidate(new RTCIceCandidate(candidate));
+           await pc.addIceCandidate(new RTCIceCandidate(candidate));
         } catch (e) {
           console.error('ICE candidate error:', e);
         }
@@ -314,6 +318,7 @@ export function useWebRTC(socket, roomId, localUserId) {
         clearInterval(speakingIntervalRef.current);
       }
       Object.values(peersRef.current).forEach((pc) => pc.close());
+      Object.values(screenPeersRef.current).forEach((pc) => pc.close());
     };
   }, []);
 
