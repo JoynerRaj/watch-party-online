@@ -166,17 +166,21 @@ function App() {
     makingOffer.current[targetUserId] = false
 
     // Initial attach of any existing local tracks
-    localCameraStream.current.getTracks().forEach(track => pc.addTrack(track, localCameraStream.current))
-    localScreenStream.current.getTracks().forEach(track => {
-      const sender = pc.addTrack(track, localScreenStream.current);
-      if (track.kind === 'video') {
-         const params = sender.getParameters();
-         if (!params.encodings) params.encodings = [{}];
-         params.encodings[0].maxBitrate = 5000000;
-         params.encodings[0].scaleResolutionDownBy = 1;
-         sender.setParameters(params).catch(e => console.error("Bitrate config failed:", e));
-      }
-    })
+    if (localCameraStream.current.getTracks().length > 0) {
+       localCameraStream.current.getTracks().forEach(track => pc.addTrack(track, localCameraStream.current))
+    }
+    if (localScreenStream.current.getTracks().length > 0) {
+       localScreenStream.current.getTracks().forEach(track => {
+         const sender = pc.addTrack(track, localScreenStream.current);
+         if (track.kind === 'video') {
+            const params = sender.getParameters();
+            if (!params.encodings) params.encodings = [{}];
+            params.encodings[0].maxBitrate = 5000000;
+            params.encodings[0].scaleResolutionDownBy = 1;
+            sender.setParameters(params).catch(e => console.error("Bitrate config failed:", e));
+         }
+       })
+    }
 
     pc.onicecandidate = (event) => {
       if (event.candidate) {
@@ -266,12 +270,18 @@ function App() {
 
     if (screenOn && screenTrack) { // Turn OFF screen share
       screenTrack.stop()
-      localScreenStream.current.removeTrack(screenTrack)
+      localScreenStream.current.getTracks().forEach(t => t.stop()) // kill all tracks including audio
       
+      // Stop sharing tracks on peer connections
       Object.values(peers.current).forEach(pc => {
-        const sender = pc.getSenders().find(s => s.track === screenTrack)
-        if (sender) pc.removeTrack(sender)
+        localScreenStream.current.getTracks().forEach(track => {
+           const sender = pc.getSenders().find(s => s.track === track)
+           if (sender) pc.removeTrack(sender)
+        })
       })
+      
+      // Clear out the local stream entirely so it's fresh for next time
+      localScreenStream.current = new MediaStream()
       
       setScreenOn(false)
       broadcastMeta()
@@ -290,7 +300,14 @@ function App() {
         
         screenTrack.onended = () => {
           setScreenOn(false)
-          localScreenStream.current.removeTrack(screenTrack)
+          localScreenStream.current.getTracks().forEach(t => t.stop())
+          Object.values(peers.current).forEach(pc => {
+             localScreenStream.current.getTracks().forEach(track => {
+                const sender = pc.getSenders().find(s => s.track === track)
+                if (sender) pc.removeTrack(sender)
+             })
+          })
+          localScreenStream.current = new MediaStream()
           broadcastMeta()
           setRefreshLocal(prev => prev + 1)
         }
